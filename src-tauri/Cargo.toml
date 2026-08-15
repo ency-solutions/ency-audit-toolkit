@@ -1,0 +1,27 @@
+[package]
+name = "ency-audit-toolkit"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+regex = "1.11"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt"] }
+trust-dns-resolver = "0.23"
+native-tls = "0.2"
+
+[profile.release]
+lto = true
+opt-level = 3
+strip = true

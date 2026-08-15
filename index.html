@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ency Solutions — IT Security Audit Toolkit</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="header-left">
+        <h1 class="title">Ency Solutions Audit Toolkit</h1>
+        <p class="subtitle">Professional IT Security Audits — Built in Rust, Backed by Experience</p>
+      </div>
+      <button id="export-btn" class="btn btn-outline">📄 Export Report</button>
+    </header>
+
+    <section class="cards">
+      <div class="card" id="card-dns">
+        <div class="card-icon">🌐</div>
+        <h3>DNS & Email Security Audit</h3>
+        <p>Check SPF, DKIM, DMARC, MX records, and email security posture for any domain.</p>
+        <button class="btn btn-primary" id="run-dns-btn">Run Audit</button>
+      </div>
+
+      <div class="card" id="card-ssl">
+        <div class="card-icon">🔒</div>
+        <h3>SSL/TLS Certificate Audit</h3>
+        <p>Validate certificates, check expiration, and verify HTTPS redirects for any website.</p>
+        <button class="btn btn-primary" id="run-ssl-btn">Run Audit</button>
+      </div>
+
+      <div class="card" id="card-firewall">
+        <div class="card-icon">🛡️</div>
+        <h3>Firewall Configuration Analysis</h3>
+        <p>Upload your firewall config to analyze rules, detect risks, and find gaps.</p>
+        <button class="btn btn-primary" id="run-fw-btn">Analyze Config</button>
+      </div>
+
+      <div class="card" id="card-ports">
+        <div class="card-icon">📡</div>
+        <h3>Network Port Scanner</h3>
+        <p>Scan common ports on a target IP to identify open services and security gaps.</p>
+        <button class="btn btn-primary" id="run-port-btn">Scan Ports</button>
+      </div>
+    </section>
+
+    <section class="results-section">
+      <h2 id="results-title" style="display:none">Audit Results</h2>
+      <div id="results-panel" class="results-panel" style="display:none">
+        <!-- Risk Score Card -->
+        <div id="risk-score-card" class="risk-score-card" style="display:none">
+          <div class="risk-header">
+            <span class="score-display" id="risk-score">-</span>
+            <span class="risk-badge" id="risk-level">-</span>
+          </div>
+          <p class="risk-summary" id="risk-executive-summary"></p>
+          <div class="severity-breakdown" id="severity-breakdown"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- DNS Audit Modal -->
+  <div id="dns-modal" class="modal-overlay" style="display:none">
+    <div class="modal-content">
+      <h3>DNS & Email Security Audit</h3>
+      <p>Enter the domain you want to audit (e.g., <code>ency-solutions.com</code>):</p>
+      <input id="dns-input" type="text" class="input-field" placeholder="example.com" />
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal('dns-modal')">Cancel</button>
+        <button class="btn btn-primary" onclick="runDnsAudit()">Run DNS Audit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SSL Audit Modal -->
+  <div id="ssl-modal" class="modal-overlay" style="display:none">
+    <div class="modal-content">
+      <h3>SSL/TLS Certificate Audit</h3>
+      <p>Enter the URL you want to audit (e.g., <code>https://ency-solutions.com</code>):</p>
+      <input id="ssl-input" type="text" class="input-field" placeholder="https://example.com" />
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal('ssl-modal')">Cancel</button>
+        <button class="btn btn-primary" onclick="runSslAudit()">Run SSL Audit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Port Scanner Modal -->
+  <div id="port-modal" class="modal-overlay" style="display:none">
+    <div class="modal-content">
+      <h3>Network Port Scanner</h3>
+      <p>Enter target IP address (e.g., <code>192.168.1.1</code>) or domain:</p>
+      <input id="port-input" type="text" class="input-field" placeholder="192.168.1.1 or example.com" />
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal('port-modal')">Cancel</button>
+        <button class="btn btn-primary" onclick="runPortScan()">Scan Ports</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Report Modal -->
+  <div id="export-modal" class="modal-overlay" style="display:none">
+    <div class="modal-content">
+      <h3>Export Audit Report</h3>
+      <p>Choose how you want to export this report:</p>
+      <div style="display:flex;gap:0.75rem;flex-direction:column">
+        <button class="btn btn-primary" onclick="exportAsText()">📄 Export as Text</button>
+        <button class="btn btn-primary" onclick="exportAsJson()">📊 Export as JSON</button>
+      </div>
+      <div class="modal-actions" style="margin-top:0.75rem">
+        <button class="btn btn-secondary" onclick="closeModal('export-modal')">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
