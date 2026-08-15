@@ -33,19 +33,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v1.0.0
+          tagName: v1.1.0
           releaseBody: |
             Desktop IT security audit toolkit for small business IT departments. Run four audits, export a scored report, done.
 
             **Audit modules**
-            - DNS / Email Security — SPF, DKIM, DMARC, MX record validation
-            - SSL / TLS — cert expiry, HTTPS redirect, chain validation
+            - DNS / Email Security — SPF, real DKIM (selector resolved from DMARC, `p=` policy check), DMARC, MX record validation
+            - SSL / TLS — cert expiry, HTTPS redirect, chain validation, HTTP security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options)
             - Firewall Config — allow-all rules, weak protocols, exposed ports
-            - Port Scanner — 20 common ports with per-port security assessments
+            - Port Scanner — 25 common ports with per-port security assessments, incl. Docker 2375, Redis 6379, memcached 11211, Elasticsearch 9200, MongoDB 27017
 
             **Risk scoring** — every audit produces a 0-100 risk score with executive summary and findings by severity (Low / Moderate / High / Critical).
 
-            **Export** — save reports as TXT or JSON with a branded filename.
+            **New in v1.1.0**
+            - Persistent audit history (last 100 runs, survives restarts, one-click clear)
+            - CSV export alongside TXT / JSON
+            - Fresh UI — glassmorphism panels, gradient accents, animated cards
 
             ### Linux
             Download the AppImage, make it executable (`chmod +x`), and run it.
