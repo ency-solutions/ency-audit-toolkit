@@ -55,7 +55,7 @@ jobs:
 
             Built with Rust + Tauri v2.
 
-          args: --target 'nsis,msi'
+          args: --bundles nsis,msi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
