@@ -33,7 +33,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
+          tagName: v1.0.0
           releaseBody: |
             Desktop IT security audit toolkit for small business IT departments. Run four audits, export a scored report, done.
 
