@@ -24,6 +24,61 @@ struct AuditResultEnvelope {
     data: serde_json::Value,
 }
 
+// ==================== PERSISTENT AUDIT HISTORY ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditRecord {
+    timestamp: String,
+    domain: String,
+    overall_risk: String,
+    checks_run: usize,
+}
+
+fn history_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("history.json"))
+}
+
+fn load_records(path: &std::path::Path) -> Vec<AuditRecord> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn record_audit(record: AuditRecord, app: tauri::AppHandle) -> Result<usize, String> {
+    let path = history_path(&app)?;
+    let mut records = load_records(&path);
+    records.push(record);
+    if records.len() > 100 {
+        records.drain(..records.len() - 100);
+    }
+    let raw = serde_json::to_string_pretty(&records).map_err(|e| e.to_string())?;
+    std::fs::write(&path, raw).map_err(|e| e.to_string())?;
+    Ok(records.len())
+}
+
+#[tauri::command]
+fn load_audit_history(app: tauri::AppHandle) -> Result<Vec<AuditRecord>, String> {
+    let path = history_path(&app)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    Ok(load_records(&path))
+}
+
+#[tauri::command]
+fn clear_audit_history(app: tauri::AppHandle) -> Result<(), String> {
+    let path = history_path(&app)?;
+    if path.exists() {
+        std::fs::write(&path, "[]").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ==================== DNS/EMAIL SECURITY AUDIT ====================
 
 #[tauri::command]
@@ -49,7 +104,9 @@ async fn check_email_security(domain: String) -> AuditResultEnvelope {
     let mut findings = Vec::new();
     let mut spf_score = 0i32;
     let mut dmarc_score = 0i32;
+    let mut dkim_score = 0i32;
     let mut mx_score = 0i32;
+    let mut dmarc_d_tag: Option<String> = None;
 
     // --- SPF ---
     match resolver.txt_lookup(&domain).await {
@@ -138,6 +195,20 @@ async fn check_email_security(domain: String) -> AuditResultEnvelope {
                     });
                     dmarc_score += 2;
 
+                    // Capture the DKIM domain from the DMARC "d=" tag (if any)
+                    if let Some(tag) = record
+                        .split(';')
+                        .map(|t| t.trim())
+                        .find(|t| t.to_lowercase().starts_with("d="))
+                    {
+                        if let Some(v) = tag.strip_prefix("d=") {
+                            let val = v.trim().to_string();
+                            if !val.is_empty() {
+                                dmarc_d_tag = Some(val);
+                            }
+                        }
+                    }
+
                     let rl = record.to_lowercase();
                     if rl.contains("p=reject") || rl.contains("p=reject") {
                         findings.push(Finding {
@@ -184,6 +255,84 @@ async fn check_email_security(domain: String) -> AuditResultEnvelope {
         }
     }
 
+    // --- DKIM ---
+    // DKIM keys are TXT records at <selector>._domainkey.<dkim_domain>.
+    // The DKIM domain comes from the DMARC "d=" tag (defaults to the audited
+    // domain). Selectors are not standardized, so probe a list of common ones.
+    let dkim_domains: Vec<String> = {
+        let mut v = Vec::new();
+        if let Some(d) = &dmarc_d_tag {
+            if *d != domain {
+                v.push(d.clone());
+            }
+        }
+        v.push(domain.clone());
+        v
+    };
+    let common_selectors = [
+        "default", "s1", "s2", "s3", "s4", "google", "selector1", "selector2",
+        "k1", "k2", "dkim", "mail", "m1", "protonmail",
+    ];
+
+    let mut dkim_found = false;
+    'probe: for dkim_domain in &dkim_domains {
+        for selector in &common_selectors {
+            let dkim_name = format!("{}._domainkey.{}", selector, dkim_domain);
+            match resolver.txt_lookup(&dkim_name).await {
+                Ok(records) => {
+                    let key = records
+                        .iter()
+                        .map(|r| r.to_string().trim_matches('"').to_string())
+                        .find(|t| t.starts_with("v=DKIM1"));
+                    if let Some(record) = key {
+                        dkim_found = true;
+                        let has_key = {
+                            let p_tag = record
+                                .split(';')
+                                .map(|t| t.trim())
+                                .find(|t| t.to_lowercase().starts_with("p="));
+                            match p_tag {
+                                Some(tag) => match tag.strip_prefix("p=") {
+                                    Some(v) => !v.trim().is_empty(),
+                                    None => false,
+                                },
+                                None => false,
+                            }
+                        };
+                        if has_key {
+                            findings.push(Finding {
+                                severity: "GOOD".into(),
+                                title: "DKIM Key Published".into(),
+                                description: format!("DKIM public key found at {}.", dkim_name),
+                                recommendation: None,
+                            });
+                            dkim_score += 2;
+                        } else {
+                            findings.push(Finding {
+                                severity: "LOW".into(),
+                                title: "DKIM Key Disabled".into(),
+                                description: format!("DKIM record at {} has an empty public key (p=), so email signing is disabled.", dkim_name),
+                                recommendation: Some("Populate the DKIM public key (p=) to enable signature validation.".into()),
+                            });
+                            dkim_score += 1;
+                        }
+                        break 'probe;
+                    }
+                }
+                Err(_) => { /* selector not published, keep probing */ }
+            }
+        }
+    }
+
+    if !dkim_found {
+        findings.push(Finding {
+            severity: "MEDIUM".into(),
+            title: "No DKIM Key Found".into(),
+            description: format!("No DKIM TXT record found under common selectors for {}.", domain),
+            recommendation: Some("Publish a DKIM record at <selector>._domainkey.yourdomain.com and enable email signing.".into()),
+        });
+    }
+
     // --- MX ---
     match resolver.mx_lookup(&domain).await {
         Ok(mx) => {
@@ -210,9 +359,9 @@ async fn check_email_security(domain: String) -> AuditResultEnvelope {
         }
     }
 
-    let total_score = spf_score + dmarc_score + mx_score;
-    let overall = if total_score >= 7 { "GOOD" }
-                  else if total_score >= 4 { "FAIR" }
+    let total_score = spf_score + dmarc_score + dkim_score + mx_score;
+    let overall = if total_score >= 8 { "GOOD" }
+                  else if total_score >= 5 { "FAIR" }
                   else { "POOR" };
 
     AuditResultEnvelope {
@@ -225,6 +374,7 @@ async fn check_email_security(domain: String) -> AuditResultEnvelope {
             "score_breakdown": {
                 "spf": spf_score,
                 "dmarc": dmarc_score,
+                "dkim": dkim_score,
                 "mx": mx_score,
                 "total": total_score
             }
@@ -287,6 +437,43 @@ async fn check_ssl(target: String) -> AuditResultEnvelope {
                         recommendation: None,
                     });
                     score += 3;
+
+                    // --- HTTP security headers ---
+                    let header_checks: &[(&str, &str, &str)] = &[
+                        ("strict-transport-security", "MEDIUM", "Add Strict-Transport-Security with max-age (e.g., max-age=31536000; includeSubDomains)."),
+                        ("content-security-policy", "LOW", "Publish a Content-Security-Policy header to mitigate XSS."),
+                        ("x-content-type-options", "LOW", "Send X-Content-Type-Options: nosniff to prevent MIME sniffing."),
+                        ("x-frame-options", "LOW", "Send X-Frame-Options: SAMEORIGIN or DENY to prevent clickjacking."),
+                        ("referrer-policy", "LOW", "Send Referrer-Policy (e.g., no-referrer) to limit referrer leakage."),
+                        ("permissions-policy", "LOW", "Send Permissions-Policy to restrict browser feature exposure."),
+                    ];
+                    for (header_name, missing_severity, recommendation) in header_checks {
+                        let name = reqwest::header::HeaderName::from_bytes(header_name.as_bytes())
+                            .expect("valid static header name");
+                        match resp.headers().get(&name) {
+                            Some(value) => {
+                                findings.push(Finding {
+                                    severity: "GOOD".into(),
+                                    title: format!("Security Header Set ({})", header_name),
+                                    description: format!(
+                                        "{}: {}",
+                                        header_name,
+                                        value.to_str().unwrap_or("<binary value>")
+                                    ),
+                                    recommendation: None,
+                                });
+                                score += 1;
+                            }
+                            None => {
+                                findings.push(Finding {
+                                    severity: missing_severity.to_string(),
+                                    title: format!("Missing Security Header ({})", header_name),
+                                    description: format!("Response does not include the {} header.", header_name),
+                                    recommendation: Some(recommendation.to_string()),
+                                });
+                            }
+                        }
+                    }
 
                     // Check for HTTPS redirect (simple)
                     let http_url = url.replace("https://", "http://");
@@ -521,12 +708,17 @@ async fn scan_ports(target: String) -> AuditResultEnvelope {
         (445, "SMB"),
         (993, "IMAPS"),
         (995, "POP3S"),
+        (2375, "Docker"),
         (3306, "MySQL"),
         (3389, "RDP"),
         (5432, "PostgreSQL"),
         (5900, "VNC"),
+        (6379, "Redis"),
         (8080, "HTTP-Alt"),
         (8443, "HTTPS-Alt"),
+        (9200, "Elasticsearch"),
+        (11211, "Memcached"),
+        (27017, "MongoDB"),
     ];
 
     let mut findings = Vec::new();
@@ -608,6 +800,36 @@ async fn scan_ports(target: String) -> AuditResultEnvelope {
                                 title: format!("PostgreSQL Open (port {})", port),
                                 description: "Database directly accessible — data leak risk.".into(),
                                 recommendation: Some("Bind PostgreSQL to localhost; use SSH tunnel for access.".into()),
+                            }),
+                            2375 => findings.push(Finding {
+                                severity: "CRITICAL".into(),
+                                title: format!("Docker API Open (port {})", port),
+                                description: "The Docker daemon API is exposed over the network. An unauthenticated socket grants root-equivalent control of the host.".into(),
+                                recommendation: Some("Bind the Docker socket to localhost only, or restrict with firewall + TLS auth.".into()),
+                            }),
+                            6379 => findings.push(Finding {
+                                severity: "HIGH".into(),
+                                title: format!("Redis Open (port {})", port),
+                                description: "Redis is frequently exposed without authentication; a remote client can run CONFIG SET and write files (potential RCE).".into(),
+                                recommendation: Some("Bind Redis to localhost, enable requirepass/ACLs, or use TLS.".into()),
+                            }),
+                            9200 => findings.push(Finding {
+                                severity: "HIGH".into(),
+                                title: format!("Elasticsearch Open (port {})", port),
+                                description: "The Elasticsearch REST API may be reachable without authentication, exposing index data and write access.".into(),
+                                recommendation: Some("Enable the security plugin/authentication and restrict access to trusted networks.".into()),
+                            }),
+                            11211 => findings.push(Finding {
+                                severity: "MEDIUM".into(),
+                                title: format!("Memcached Open (port {})", port),
+                                description: "Memcached has no authentication and is a classic DDoS amplification target.".into(),
+                                recommendation: Some("Bind memcached to localhost or restrict to internal networks via firewall.".into()),
+                            }),
+                            27017 => findings.push(Finding {
+                                severity: "HIGH".into(),
+                                title: format!("MongoDB Open (port {})", port),
+                                description: "An exposed MongoDB without authentication can allow full read/write access to databases.".into(),
+                                recommendation: Some("Enable authentication and restrict access to localhost/internal networks.".into()),
                             }),
                             80 => findings.push(Finding {
                                 severity: "INFO".into(),
@@ -904,6 +1126,9 @@ fn main() {
             run_audit,
             export_report,
             export_json_report,
+            record_audit,
+            load_audit_history,
+            clear_audit_history,
             pick_firewall_config,
             read_file,
         ])

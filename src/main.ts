@@ -5,6 +5,7 @@ import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
 
 // Track last audit result for JSON export
 let lastAuditResult: any = null;
+let lastRiskLevel: string = '';
 
 // Expose handlers globally for inline onclick attributes
 const closeDnsModal = () => document.getElementById('dns-modal')!.style.display = 'none';
@@ -26,6 +27,79 @@ const closeAll = () => {
   document.querySelectorAll('.modal-overlay').forEach(el => (el as HTMLElement).style.display = 'none');
 };
 
+// ─── Audit history (persisted between runs via backend) ──────────────────
+type HistoryEntry = {
+  timestamp: string;
+  domain: string;
+  overall_risk: string;
+  checks_run: number;
+};
+
+const saveHistoryEntry = (label: string, level: string, checks: number) => {
+  const entry: HistoryEntry = {
+    timestamp: new Date().toISOString(),
+    domain: label,
+    overall_risk: level,
+    checks_run: checks,
+  };
+  invoke('record_audit', { record: entry }).catch((e: any) => {
+    console.warn('History record failed:', e);
+  });
+};
+
+const renderHistory = () => {
+  const el = document.getElementById('audit-history') as HTMLElement;
+  if (!el) return;
+  const pill = document.getElementById('history-count');
+  invoke<HistoryEntry[]>('load_audit_history')
+    .then(entries => {
+      if (!entries || entries.length === 0) {
+        el.innerHTML = '<p class="history-empty">No audits recorded yet. Your history will appear here.</p>';
+        if (pill) pill.textContent = '0';
+        return;
+      }
+      if (pill) pill.textContent = String(entries.length);
+      el.innerHTML = entries
+        .slice(0, 10)
+        .map(e => {
+          const level = (e.overall_risk || 'UNKNOWN').toLowerCase();
+          const when = new Date(e.timestamp).toLocaleString();
+          const checks = e.checks_run ?? 0;
+          return `<div class="history-item risk-${level}">
+            <div class="history-top">
+              <span class="history-label">${escapeHtml(e.domain)}</span>
+              <span class="risk-badge risk-${level}">${escapeHtml(e.overall_risk || '?')}</span>
+            </div>
+            <div class="history-meta">${when} · ${checks} checks</div>
+          </div>`;
+        })
+        .join('');
+    })
+    .catch(err => {
+      console.warn('Failed to load history:', err);
+      el.innerHTML = '<p class="history-empty">Could not load history.</p>';
+    });
+};
+
+const clearHistory = () => {
+  invoke('clear_audit_history')
+    .then(() => {
+      renderHistory();
+    })
+    .catch(err => {
+      console.error('Failed to clear history:', err);
+      alert('Failed to clear history.');
+    });
+};
+
+const escapeHtml = (s: string) =>
+  (s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 // Display risk score card from backend result
 const displayRiskScore = async (findings: any[]) => {
   const riskCard = document.getElementById('risk-score-card') as HTMLElement;
@@ -34,6 +108,7 @@ const displayRiskScore = async (findings: any[]) => {
   try {
     const scoreData: any = await invoke('calculate_risk_score', { findings });
     riskCard.style.display = 'block';
+    lastRiskLevel = scoreData.level || 'UNKNOWN';
 
     const scoreEl = document.getElementById('risk-score') as HTMLElement;
     const levelEl = document.getElementById('risk-level') as HTMLElement;
@@ -109,6 +184,7 @@ const runDnsAudit = async () => {
     }
 
     lastAuditResult = { audit_type: 'dns', ...result };
+    saveHistoryEntry(`DNS · ${domain}`, lastRiskLevel, (result.findings || []).length);
   } catch (e: any) {
     panel.innerHTML = `<p style="color:#ef4444">Error: ${e.message || e}</p>`;
   }
@@ -155,6 +231,7 @@ const runSslAudit = async () => {
     }
 
     lastAuditResult = { audit_type: 'ssl', ...result };
+    saveHistoryEntry(`SSL · ${target}`, lastRiskLevel, (result.findings || []).length);
   } catch (e: any) {
     panel.innerHTML = `<p style="color:#ef4444">Error: ${e.message || e}</p>`;
   }
@@ -197,6 +274,8 @@ const runFirewallAudit = async () => {
     }
 
     lastAuditResult = { audit_type: 'firewall', ...result };
+    const _fwName = (typeof file === 'string' ? (file as string).split(/[\\/]/).pop() : null) || 'config';
+    saveHistoryEntry(`Firewall · ${_fwName}`, lastRiskLevel, (result.findings || []).length);
     console.log('Firewall audit completed:', result);
   } catch (e: any) {
     const panel = document.getElementById('results-panel')!;
@@ -237,6 +316,7 @@ const runPortScan = async () => {
     }
 
     lastAuditResult = { audit_type: 'port_scan', ...result };
+    saveHistoryEntry(`Ports · ${target}`, lastRiskLevel, (result.findings || []).length);
   } catch (e: any) {
     panel.innerHTML = `<p style="color:#ef4444">Error: ${e.message || e}</p>`;
   }
@@ -308,6 +388,40 @@ const exportAsJson = async () => {
   }
 };
 
+// Build a properly-escaped CSV from the last audit result's findings
+const buildCsv = () => {
+  const findings = (lastAuditResult?.findings || [] as any[]) as any[];
+  if (findings.length === 0) {
+    return 'severity,title,description,recommendation\n';
+  }
+  const header = ['severity', 'title', 'description', 'recommendation'];
+  const quote = (v: any) => {
+    const s = v == null ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const rows = findings.map(f =>
+    [f.severity, f.title, f.description, f.recommendation].map(quote).join(',')
+  );
+  return [header.join(','), ...rows].join('\r\n') + '\r\n';
+};
+
+const exportAsCsv = async () => {
+  try {
+    const path = await save({
+      title: 'Save Report as CSV',
+      filters: [{ name: 'CSV Files', extensions: ['csv'] }],
+      defaultPath: `ency-audit-report-${Date.now()}.csv`
+    });
+    if (path) {
+      await writeTextFile(path, buildCsv());
+      alert('CSV report saved!');
+    }
+  } catch (e: any) {
+    console.error('[EXPORT] exportAsCsv error:', e);
+    if (!e.message?.includes('cancelled')) alert(`Error: ${e.message || e}`);
+  }
+};
+
 // Export report button handler
 const exportReport = () => openExportModal();
 
@@ -318,6 +432,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('run-fw-btn')!.addEventListener('click', runFirewallAudit);
   document.getElementById('run-port-btn')!.addEventListener('click', openPortModal);
   document.getElementById('export-btn')!.addEventListener('click', exportReport);
+
+  // Load persisted audit history
+  renderHistory();
 });
 
 // Expose all handlers for inline onclick attributes
@@ -328,4 +445,7 @@ window['runPortScan'] = runPortScan;
 window['exportReport'] = exportReport;
 window['exportAsText'] = exportAsText;
 window['exportAsJson'] = exportAsJson;
+window['exportAsCsv'] = exportAsCsv;
+window['clearHistory'] = clearHistory;
+window['renderHistory'] = renderHistory;
 window['closeModal'] = (id: string) => document.getElementById(id)!.style.display = 'none';
