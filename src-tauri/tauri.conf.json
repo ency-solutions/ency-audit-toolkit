@@ -1,13 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Ency Audit Toolkit",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.ency.solutions.audit-toolkit",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "cd /home/noise/lilith-projects/ency-audit-toolkit && npm run dev",
-    "beforeBuildCommand": "cd /home/noise/lilith-projects/ency-audit-toolkit && npm run build"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
